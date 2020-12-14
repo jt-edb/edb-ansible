@@ -1,0 +1,13 @@
+---
+- name: Converge
+  hosts: all
+  pre_tasks:
+    - set_fact:
+        pg_type: "PG"
+        pg_version: "13"
+        yum_username: ""
+        yum_password: ""
+  tasks:
+    - name: "Include setup_repo"
+      include_role:
+        name: "setup_repo"
