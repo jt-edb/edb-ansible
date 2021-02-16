@@ -1,0 +1,167 @@
+---
+
+- name: Check if repository file is already there
+  stat:
+    path: /etc/yum.repos.d/2ndquadrant-{{ bdr_repository | replace('/', '-') }}-release-pg{{ pg_version }}.repo
+  register: stat_repo
+
+- name: Configure 2ndQ repository acces to {{ bdr_repository }}
+  shell:
+    cmd: >-
+      curl https://access.2ndquadrant.com/api/repository/{{ bdr_subscription_key }}/{{ bdr_repository }}/release/{{ pg_version }}/rpm | bash
+  become: yes
+  when: not stat_repo.stat.exists
+
+- name: Installation of prerequisites packages
+  yum:
+    name:
+      - "python-psycopg2"
+    state: present
+
+- name: Installation of BDR packages
+  yum:
+    name: "{{ bdr_pg_packages }}"
+    state: present
+
+- name: Initialize the Postgres instance
+  include_role:
+    name: edb_devops.edb_postgres.init_dbserver
+
+- name: Manage Postgres configuration for BDR
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: manage_postgres_params
+  vars:
+    pg_postgres_conf_params:
+      - name: wal_level
+        value: 'logical'
+      - name: track_commit_timestamp
+        value: on
+      - name: min_wal_size
+        value: "{{ pg_min_wal_size }}"
+      - name: max_wal_size
+        value: "{{ pg_max_wal_size }}"
+
+- name: Configure shared_preload_libraries
+  lineinfile:
+    path: "{{ pg_data }}/postgresql.auto.conf"
+    regexp: "^shared_preload_libraries ="
+    line: "shared_preload_libraries = 'pglogical,bdr'"
+    state: present
+
+- name: Restart the pg service
+  systemd:
+    name: "{{ pg_service }}"
+    state: restarted
+  become: yes
+
+- name: Manage Postgres HBA configuration for BDR
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: manage_hba_conf
+  vars:
+    pg_hba_ip_addresses:
+      - contype: "host"
+        users: "all"
+        databases: "all"
+        method: "scram-sha-256"
+        source: "{{ network_cidr }}"
+        state: present
+      - contype: "local"
+        users: "{{ bdr_user_name }}"
+        databases: "{{ bdr_dbname }}"
+        method: "scram-sha-256"
+        source: ""
+        state: present
+
+- name: Ensure Postgres user {{ bdr_user_name }} exists
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: manage_users
+  vars:
+    pg_users:
+      - name: "{{ bdr_user_name }}"
+        pass: "{{ bdr_user_password }}"
+        role_attr_flags: "SUPERUSER,LOGIN"
+
+- name: Ensure Postgres database {{ bdr_dbname }} exists
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: manage_db
+  vars:
+    pg_databases:
+      - name: "{{ bdr_dbname }}"
+        owner: "{{ bdr_user_name }}"
+
+- name: Ensure Postgres extension bdr-enterprise exists on {{ bdr_dbname }}
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: manage_extensions
+  vars:
+    pg_extensions:
+      - name: "bdr-enterprise"
+        database: "{{ bdr_dbname }}"
+
+- name: Populate bdrdemo DB with pgbench
+  shell:
+    cmd: >-
+      PGPASSWORD={{ bdr_user_password }} /usr/pgsql-{{ pg_version }}/bin/pgbench -U {{ bdr_user_name }} -i -s {{ pgbench_scale_factor }} {{ bdr_dbname }}
+  when:
+    - inventory_hostname == 'pg1'
+
+- name: Apply REPLICA IDENTITY
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: execute_sql_scripts
+  vars:
+    pg_query:
+      - query: "ALTER TABLE pgbench_history ADD PRIMARY KEY (tid, bid, aid, delta, mtime)"
+        db: "{{ bdr_dbname }}"
+      - query: "ALTER TABLE pgbench_accounts REPLICA IDENTITY USING INDEX pgbench_accounts_pkey;"
+        db: "{{ bdr_dbname }}"
+      - query: "ALTER TABLE pgbench_branches REPLICA IDENTITY USING INDEX pgbench_branches_pkey;"
+        db: "{{ bdr_dbname }}"
+      - query: "ALTER TABLE pgbench_history REPLICA IDENTITY USING INDEX pgbench_history_pkey;"
+        db: "{{ bdr_dbname }}"
+      - query: "ALTER TABLE pgbench_tellers REPLICA IDENTITY USING INDEX pgbench_tellers_pkey;"
+        db: "{{ bdr_dbname }}"
+  when:
+    - inventory_hostname == 'pg1'
+
+- name: BDR nodes creation
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: execute_sql_scripts
+  vars:
+    pg_query:
+      - query: >-
+          SELECT bdr.create_node(
+            '{{ inventory_hostname }}',
+            'port={{ pg_port }} dbname={{ bdr_dbname }} host={{ hostvars[inventory_hostname].private_ip }} user={{ bdr_user_name }} password={{ bdr_user_password }}'
+          )
+        db: "{{ bdr_dbname }}"
+
+- name: BDR group creation on pg1
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: execute_sql_scripts
+  vars:
+    pg_query:
+      - query: "SELECT bdr.create_node_group('bdrgroup')"
+        db: "{{ bdr_dbname }}"
+  when:
+    - inventory_hostname == 'pg1'
+
+- name: Joining pg2 node to BDR group
+  include_role:
+    name: edb_devops.edb_postgres.manage_dbserver
+    tasks_from: execute_sql_scripts
+  vars:
+    pg_query:
+      - query: >-
+          SELECT bdr.join_node_group(
+            'port={{ pg_port }} dbname={{ bdr_dbname }} host={{ hostvars['pg1'].private_ip }} user={{ bdr_user_name }} password={{ bdr_user_password }}'
+          )
+        db: "{{ bdr_dbname }}"
+  when:
+    - inventory_hostname == 'pg2'

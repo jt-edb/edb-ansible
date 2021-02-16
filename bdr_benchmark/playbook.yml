@@ -1,0 +1,44 @@
+---
+
+- hosts: bdr
+  name: BDR deployment
+  become: yes
+  gather_facts: yes
+  pre_tasks:
+    - name: Initialize the user defined variables
+      set_fact:
+        bdr_subscription_key: "2NDQ_SUBSCRIPTION_KEY"
+        bdr_repository: "products/2ndqpostgres"
+        bdr_user_name: "bdruser"
+        bdr_dbname: "bdrdemo"
+        bdr_user_password: "12Password"
+        pg_version: 11
+        pg_type: "PG"
+        pg_ssl: false
+        pg_data: /pgdata/pg_data
+        pg_wal: /pgwal/pg_wal
+        network_cidr: "10.0.0.0/24"
+        pgbench_scale_factor: 1000
+        disable_logging: false
+        pg_min_wal_size: "1GB"
+        pg_max_wal_size: "50GB"
+  roles:
+    - role: setup_bdr
+
+- hosts: bdr
+  name: BDR instances autotuning
+  become: yes
+  gather_facts: yes
+  collections:
+    - edb_devops.edb_postgres
+  pre_tasks:
+    - name: Initialize the user defined variables
+      set_fact:
+        pg_version: 11
+        pg_type: "PG"
+        pg_data: /pgdata/pg_data
+        pg_wal: /pgwal/pg_wal
+        ssd_disk: yes
+        disable_logging: false
+  roles:
+    - role: autotuning

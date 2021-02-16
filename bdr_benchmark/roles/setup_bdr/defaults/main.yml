@@ -1,0 +1,16 @@
+---
+
+bdr_subscription_key: "2NDQ_SUBSCRIPTION_KEY"
+pg_version: 11
+pg_type: "PG"
+bdr_repository: "products/2ndqpostgres"
+bdr_pg_packages:
+  - "postgresql{{ pg_version }}-bdr"
+  - "postgresql{{ pg_version }}-contrib"
+bdr_user_name: "bdruser"
+bdr_dbname: "bdrdemo"
+bdr_user_password: "12Password"
+network_cidr: "10.0.0.0/24"
+pgbench_scale_factor: 1000
+pg_min_wal_size: "1GB"
+pg_max_wal_size: "50GB"
